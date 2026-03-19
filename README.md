@@ -8,6 +8,8 @@ Speech Cutter is a small desktop app that loads a video, finds the parts with hu
 - Detects spoken audio with the bundled Silero VAD ONNX model.
 - Removes non-speech stretches and joins the kept parts into a single MP4.
 - Saves the result as `<original_name>_speech_only.mp4` in the same folder as the source video.
+- Uses the natural trim profile by default, with a simple padding control in seconds.
+- Can optionally crop selected segments with a visual frame picker for a zoom-in effect.
 - Runs in a simple Windows-friendly Tkinter GUI and also supports a CLI mode.
 
 ## Requirements
@@ -40,14 +42,8 @@ python -m venv .venv
 ## CLI example
 
 ```powershell
-.\.venv\Scripts\python app.py input.mp4 --preset balanced
+.\.venv\Scripts\python app.py input.mp4 --padding-seconds 0.18
 ```
-
-Available presets:
-
-- `natural`
-- `balanced`
-- `aggressive`
 
 ## Notes
 

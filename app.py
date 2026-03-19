@@ -37,10 +37,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--preset",
         choices=list(PRESETS.keys()),
-        default="balanced",
+        default="natural",
         help="Speech trimming preset to use in CLI mode.",
     )
-    parser.add_argument("--padding-ms", type=int, help="Extra padding to keep around each speech segment.")
+    parser.add_argument("--padding-seconds", type=float, help="Extra padding to keep around each speech segment.")
+    parser.add_argument("--padding-ms", type=int, help="Legacy option for padding in milliseconds.")
     parser.add_argument("--merge-gap-ms", type=int, help="Merge nearby speech chunks when the pause is shorter than this.")
     args = parser.parse_args(argv)
 
@@ -59,7 +60,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         options = build_options(
             args.preset,
-            padding_ms=args.padding_ms,
+            padding_ms=(
+                int(round(args.padding_seconds * 1000))
+                if args.padding_seconds is not None
+                else args.padding_ms
+            ),
             merge_gap_ms=args.merge_gap_ms,
         )
         result = process_video(

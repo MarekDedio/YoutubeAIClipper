@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass, replace
 
-from .pipeline import ProcessingOptions
+from .pipeline import CropSettings, ProcessingOptions
 from .vad import VadSettings
 
 
@@ -71,6 +71,7 @@ def build_options(
     *,
     padding_ms: int | None = None,
     merge_gap_ms: int | None = None,
+    crop: CropSettings | None = None,
 ) -> ProcessingOptions:
     preset = PRESETS[preset_key]
     settings = preset.settings
@@ -80,4 +81,4 @@ def build_options(
     if merge_gap_ms is not None:
         settings = replace(settings, merge_gap_ms=int(merge_gap_ms))
 
-    return ProcessingOptions(vad=settings)
+    return ProcessingOptions(vad=settings, crop=crop or CropSettings())
