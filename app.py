@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from speech_cutter.gui import launch_gui
+from speech_cutter.pipeline import check_runtime, process_video
+from speech_cutter.presets import PRESETS, build_options
+
+
+def _make_cli_progress_callback():
+    last_percent = -1
+    last_status = ""
+
+    def callback(value: float, status: str) -> None:
+        nonlocal last_percent, last_status
+        percent = int(value * 100)
+        if percent != last_percent or status != last_status:
+            print(f"{value * 100:5.1f}%  {status}", flush=True)
+            last_percent = percent
+            last_status = status
+
+    return callback
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Keep only spoken parts from a video and export the result as MP4."
+    )
+    parser.add_argument("input", nargs="?", help="Source video file.")
+    parser.add_argument("output", nargs="?", help="Output MP4 file.")
+    parser.add_argument(
+        "--preset",
+        choices=list(PRESETS.keys()),
+        default="balanced",
+        help="Speech trimming preset to use in CLI mode.",
+    )
+    parser.add_argument("--padding-ms", type=int, help="Extra padding to keep around each speech segment.")
+    parser.add_argument("--merge-gap-ms", type=int, help="Merge nearby speech chunks when the pause is shorter than this.")
+    args = parser.parse_args(argv)
+
+    issues = check_runtime()
+    if issues:
+        for issue in issues:
+            print(f"Error: {issue}", file=sys.stderr)
+        return 1
+
+    if args.input and args.output:
+        options = build_options(
+            args.preset,
+            padding_ms=args.padding_ms,
+            merge_gap_ms=args.merge_gap_ms,
+        )
+        result = process_video(
+            Path(args.input),
+            Path(args.output),
+            options=options,
+            progress_callback=_make_cli_progress_callback(),
+            log_callback=lambda message: print(message, flush=True),
+        )
+        print(
+            f"Saved {result.output_path} with {len(result.segments)} speech segment(s). "
+            f"Kept {result.kept_duration:.1f}s / {result.input_duration:.1f}s."
+        )
+        return 0
+
+    launch_gui()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
