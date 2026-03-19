@@ -9,7 +9,9 @@ Speech Cutter is a small desktop app that loads a video, finds the parts with hu
 - Removes non-speech stretches and joins the kept parts into a single MP4.
 - Saves the result as `<original_name>_speech_only.mp4` in the same folder as the source video.
 - Uses the natural trim profile by default, with a simple padding control in seconds.
-- Can optionally crop selected segments with a visual frame picker for a zoom-in effect.
+- Can optionally crop selected segments with a visual frame picker that stays locked to the original video aspect ratio.
+- Can burn in TikTok-style subtitles with a highlighted active word.
+- Can automatically mute detected profanity and censor it in the subtitles.
 - Runs in a simple Windows-friendly Tkinter GUI and also supports a CLI mode.
 
 ## Requirements
@@ -18,6 +20,7 @@ Speech Cutter is a small desktop app that loads a video, finds the parts with hu
 - `ffmpeg` and `ffprobe` available in `PATH`
 
 This machine already has `ffmpeg`, so the main extra step is installing Python packages from `requirements.txt`.
+The first caption-enabled run also downloads a Whisper speech-to-text model.
 
 ## Run it
 
@@ -42,7 +45,7 @@ python -m venv .venv
 ## CLI example
 
 ```powershell
-.\.venv\Scripts\python app.py input.mp4 --padding-seconds 0.18
+.\.venv\Scripts\python app.py input.mp4 --padding-seconds 0.18 --captions --profanity-filter
 ```
 
 ## Notes
@@ -50,6 +53,7 @@ python -m venv .venv
 - The exported file is always MP4 for wide compatibility.
 - Very noisy videos can still produce occasional false positives or false negatives.
 - The first run may take a little longer while dependencies install.
+- Subtitle timing comes from a Whisper speech-to-text pass after trimming, so caption-enabled runs take longer than plain cutting.
 
 ## Third-party component
 
