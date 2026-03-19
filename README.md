@@ -1,12 +1,13 @@
 # Speech Cutter
 
-Speech Cutter is a small desktop app that loads a video, finds the parts with human speech, and exports a new MP4 that keeps only those spoken sections.
+Speech Cutter is a small desktop app that loads a video, finds the parts with human speech, and exports a new MP4 next to the original file.
 
 ## What it does
 
 - Accepts common video formats like `mp4`, `webm`, `mkv`, `mov`, and more.
 - Detects spoken audio with the bundled Silero VAD ONNX model.
 - Removes non-speech stretches and joins the kept parts into a single MP4.
+- Saves the result as `<original_name>_speech_only.mp4` in the same folder as the source video.
 - Runs in a simple Windows-friendly Tkinter GUI and also supports a CLI mode.
 
 ## Requirements
@@ -39,7 +40,7 @@ python -m venv .venv
 ## CLI example
 
 ```powershell
-.\.venv\Scripts\python app.py input.mp4 output.mp4 --preset balanced
+.\.venv\Scripts\python app.py input.mp4 --preset balanced
 ```
 
 Available presets:
@@ -60,4 +61,3 @@ This app bundles the official Silero VAD 16 kHz ONNX model under the MIT license
 
 - Repo: [snakers4/silero-vad](https://github.com/snakers4/silero-vad)
 - License copy: [third_party_licenses/Silero-VAD-LICENSE.txt](C:\Users\Marel\Desktop\CODEX CLIP\third_party_licenses\Silero-VAD-LICENSE.txt)
-

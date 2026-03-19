@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from speech_cutter.gui import launch_gui
-from speech_cutter.pipeline import check_runtime, process_video
+from speech_cutter.pipeline import build_output_path, check_runtime, process_video
 from speech_cutter.presets import PRESETS, build_options
 
 
@@ -29,7 +29,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Keep only spoken parts from a video and export the result as MP4."
     )
     parser.add_argument("input", nargs="?", help="Source video file.")
-    parser.add_argument("output", nargs="?", help="Output MP4 file.")
+    parser.add_argument(
+        "output",
+        nargs="?",
+        help="Optional legacy argument. Output is now always saved next to the source video.",
+    )
     parser.add_argument(
         "--preset",
         choices=list(PRESETS.keys()),
@@ -46,7 +50,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Error: {issue}", file=sys.stderr)
         return 1
 
-    if args.input and args.output:
+    if args.input:
+        output_path = build_output_path(Path(args.input))
+        if args.output:
+            print(
+                f"Output path is automatic in this version. Saving to {output_path}",
+                flush=True,
+            )
         options = build_options(
             args.preset,
             padding_ms=args.padding_ms,
@@ -54,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         result = process_video(
             Path(args.input),
-            Path(args.output),
+            output_path,
             options=options,
             progress_callback=_make_cli_progress_callback(),
             log_callback=lambda message: print(message, flush=True),
