@@ -1,5 +1,6 @@
 """Speech Cutter application package."""
 
+from .captions import CaptionSettings
 from .pipeline import (
     CropSettings,
     NoSpeechDetectedError,
@@ -16,6 +17,7 @@ from .presets import PRESETS, build_options
 __all__ = [
     "NoSpeechDetectedError",
     "PRESETS",
+    "CaptionSettings",
     "CropSettings",
     "ProcessingOptions",
     "ProcessingResult",

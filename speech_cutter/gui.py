@@ -11,6 +11,7 @@ import tempfile
 import threading
 import tkinter as tk
 
+from .captions import CaptionSettings
 from .pipeline import (
     CropSettings,
     NoSpeechDetectedError,
@@ -55,6 +56,10 @@ class CropSelectionDialog(tk.Toplevel):
         self.result: tuple[int, int, int, int] | None = None
         self._source_width = source_width
         self._source_height = source_height
+        self._aspect_gcd = max(math.gcd(self._source_width, self._source_height), 1)
+        self._aspect_width_unit = self._source_width // self._aspect_gcd
+        self._aspect_height_unit = self._source_height // self._aspect_gcd
+        self._aspect_step_units = 2 if (self._aspect_width_unit % 2 == 1 or self._aspect_height_unit % 2 == 1) else 1
         self._temp_dir = tempfile.TemporaryDirectory(prefix="speech_cutter_crop_")
         preview_path = self._extract_preview_frame(
             input_path=input_path,
@@ -71,7 +76,7 @@ class CropSelectionDialog(tk.Toplevel):
         self._rect_id: int | None = None
         self._overlay_id: int | None = None
 
-        self.summary_var = tk.StringVar(value="Drag a rectangle on the preview.")
+        self.summary_var = tk.StringVar(value=self._default_summary_message())
 
         self._build_layout()
         self._bind_events()
@@ -97,7 +102,10 @@ class CropSelectionDialog(tk.Toplevel):
 
         ttk.Label(
             frame,
-            text="Drag a box over the part of the frame you want to zoom into.",
+            text=(
+                "Drag a box over the part of the frame you want to zoom into. "
+                f"The crop is locked to the original aspect ratio ({self._aspect_width_unit}:{self._aspect_height_unit})."
+            ),
             wraplength=860,
         ).pack(anchor="w")
 
@@ -144,14 +152,14 @@ class CropSelectionDialog(tk.Toplevel):
         if self._current_rect is None:
             return
         end_x, end_y = self._clamp_preview_point(event.x, event.y)
-        self._current_rect = (self._start_x, self._start_y, end_x, end_y)
+        self._current_rect = self._build_locked_preview_rect(end_x, end_y)
         self._redraw_selection()
 
     def _on_release(self, event: tk.Event[tk.Canvas]) -> None:
         if self._current_rect is None:
             return
         end_x, end_y = self._clamp_preview_point(event.x, event.y)
-        self._current_rect = (self._start_x, self._start_y, end_x, end_y)
+        self._current_rect = self._build_locked_preview_rect(end_x, end_y)
         self._redraw_selection()
 
     def _redraw_selection(self) -> None:
@@ -159,7 +167,7 @@ class CropSelectionDialog(tk.Toplevel):
             self.canvas.delete(self._rect_id)
 
         if not self._current_rect:
-            self.summary_var.set("No crop selected.")
+            self.summary_var.set(self._default_summary_message())
             return
 
         x0, y0, x1, y1 = self._normalize_preview_rect(self._current_rect)
@@ -174,18 +182,23 @@ class CropSelectionDialog(tk.Toplevel):
 
         crop = self._preview_to_source_crop((x0, y0, x1, y1))
         if crop is None:
-            self.summary_var.set("Selection is too small. Drag a larger box.")
+            self.summary_var.set(
+                f"Selection is too small. Drag a larger {self._aspect_width_unit}:{self._aspect_height_unit} box."
+            )
             return
 
         x, y, width, height = crop
-        self.summary_var.set(f"Crop selected: x={x}, y={y}, width={width}, height={height}")
+        self.summary_var.set(
+            f"Crop selected: x={x}, y={y}, width={width}, height={height} "
+            f"(locked to {self._aspect_width_unit}:{self._aspect_height_unit})."
+        )
 
     def _clear_selection(self) -> None:
         self._current_rect = None
         if self._rect_id is not None:
             self.canvas.delete(self._rect_id)
             self._rect_id = None
-        self.summary_var.set("No crop selected.")
+        self.summary_var.set(self._default_summary_message())
 
     def _apply(self) -> None:
         if not self._current_rect:
@@ -215,6 +228,37 @@ class CropSelectionDialog(tk.Toplevel):
             int(round((y + height) * scale_y)),
         )
 
+    def _build_locked_preview_rect(self, end_x: int, end_y: int) -> tuple[int, int, int, int]:
+        delta_x = end_x - self._start_x
+        delta_y = end_y - self._start_y
+        if delta_x == 0 or delta_y == 0:
+            return self._start_x, self._start_y, self._start_x, self._start_y
+
+        direction_x = 1 if delta_x >= 0 else -1
+        direction_y = 1 if delta_y >= 0 else -1
+        available_width = self._preview_width - self._start_x if direction_x > 0 else self._start_x
+        available_height = self._preview_height - self._start_y if direction_y > 0 else self._start_y
+        max_width = min(abs(delta_x), available_width)
+        max_height = min(abs(delta_y), available_height)
+        if max_width <= 0 or max_height <= 0:
+            return self._start_x, self._start_y, self._start_x, self._start_y
+
+        scale = min(
+            max_width / max(self._preview_width, 1),
+            max_height / max(self._preview_height, 1),
+        )
+        locked_width = int(math.floor(self._preview_width * scale))
+        locked_height = int(math.floor(self._preview_height * scale))
+        if locked_width <= 0 or locked_height <= 0:
+            return self._start_x, self._start_y, self._start_x, self._start_y
+
+        return (
+            self._start_x,
+            self._start_y,
+            self._start_x + direction_x * locked_width,
+            self._start_y + direction_y * locked_height,
+        )
+
     def _preview_to_source_crop(
         self,
         rect: tuple[int, int, int, int],
@@ -231,15 +275,26 @@ class CropSelectionDialog(tk.Toplevel):
         right = min(self._source_width, int(math.ceil(x1 * scale_x)))
         bottom = min(self._source_height, int(math.ceil(y1 * scale_y)))
 
-        width = right - left
-        height = bottom - top
-        if width < 2 or height < 2:
+        rough_width = right - left
+        rough_height = bottom - top
+        if rough_width < 2 or rough_height < 2:
             return None
 
-        if width % 2 == 1 and width > 2:
-            width -= 1
-        if height % 2 == 1 and height > 2:
-            height -= 1
+        scale_units = int(
+            math.floor(
+                min(
+                    rough_width / max(self._aspect_width_unit, 1),
+                    rough_height / max(self._aspect_height_unit, 1),
+                )
+            )
+        )
+        if self._aspect_step_units > 1:
+            scale_units -= scale_units % self._aspect_step_units
+        if scale_units < max(self._aspect_step_units, 1):
+            return None
+
+        width = self._aspect_width_unit * scale_units
+        height = self._aspect_height_unit * scale_units
 
         if left + width > self._source_width:
             left = max(0, self._source_width - width)
@@ -247,6 +302,9 @@ class CropSelectionDialog(tk.Toplevel):
             top = max(0, self._source_height - height)
 
         return left, top, width, height
+
+    def _default_summary_message(self) -> str:
+        return f"No crop selected. Aspect is locked to {self._aspect_width_unit}:{self._aspect_height_unit}."
 
     def _normalize_preview_rect(self, rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
         x0, y0, x1, y1 = rect
@@ -291,8 +349,8 @@ class SpeechCutterApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Speech Cutter")
-        self.geometry("940x760")
-        self.minsize(880, 680)
+        self.geometry("940x860")
+        self.minsize(880, 760)
         self.configure(bg="#f5f1e8")
 
         self._worker: threading.Thread | None = None
@@ -317,6 +375,8 @@ class SpeechCutterApp(tk.Tk):
         self.crop_every_value_var = tk.StringVar()
         self.crop_min_seconds_var = tk.DoubleVar(value=1.2)
         self.crop_min_seconds_value_var = tk.StringVar()
+        self.captions_enabled_var = tk.BooleanVar(value=True)
+        self.profanity_filter_var = tk.BooleanVar(value=True)
 
         self.padding_seconds_var.trace_add("write", self._refresh_setting_labels)
         self.crop_every_var.trace_add("write", self._refresh_setting_labels)
@@ -384,7 +444,7 @@ class SpeechCutterApp(tk.Tk):
         root = ttk.Frame(self, style="Root.TFrame", padding=18)
         root.pack(fill="both", expand=True)
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(4, weight=1)
+        root.rowconfigure(5, weight=1)
 
         hero = ttk.Frame(root, style="Root.TFrame")
         hero.grid(row=0, column=0, sticky="ew", pady=(0, 14))
@@ -509,8 +569,9 @@ class SpeechCutterApp(tk.Tk):
         ttk.Label(
             crop_card,
             text=(
-                "The crop box is picked on a frame preview and uses the original video size under the hood. "
-                "Cropped segments are scaled back up, so this behaves like a zoom. Short segments can be skipped to avoid fast jump cuts."
+                "The crop box is picked on a frame preview and is locked to the original video aspect ratio, "
+                "so the zoom never stretches. Cropped segments are scaled back up, and short segments can be skipped "
+                "to avoid fast jump cuts."
             ),
             style="Body.TLabel",
             wraplength=780,
@@ -518,8 +579,33 @@ class SpeechCutterApp(tk.Tk):
 
         self._crop_widgets = [self.pick_crop_button, self.clear_crop_button, self.crop_every_scale, self.crop_min_scale]
 
+        caption_card = ttk.Frame(root, style="Card.TFrame", padding=16)
+        caption_card.grid(row=4, column=0, sticky="ew")
+        caption_card.columnconfigure(0, weight=1)
+
+        ttk.Label(caption_card, text="Captions & Filter", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(
+            caption_card,
+            text="Burn in TikTok-style subtitles",
+            variable=self.captions_enabled_var,
+        ).grid(row=1, column=0, sticky="w", pady=(12, 0))
+        ttk.Checkbutton(
+            caption_card,
+            text="Mute profanity automatically",
+            variable=self.profanity_filter_var,
+        ).grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(
+            caption_card,
+            text=(
+                "Subtitles are baked into the video with bold lower-third captions and a live highlighted word. "
+                "The first run may download the speech-to-text model."
+            ),
+            style="Body.TLabel",
+            wraplength=780,
+        ).grid(row=3, column=0, sticky="w", pady=(12, 0))
+
         activity_card = ttk.Frame(root, style="Card.TFrame", padding=16)
-        activity_card.grid(row=4, column=0, sticky="nsew")
+        activity_card.grid(row=5, column=0, sticky="nsew", pady=(14, 0))
         activity_card.columnconfigure(0, weight=1)
         activity_card.rowconfigure(4, weight=1)
 
@@ -681,6 +767,10 @@ class SpeechCutterApp(tk.Tk):
             every_n_segments=crop_every,
             min_segment_seconds=crop_min_seconds,
         )
+        caption_settings = CaptionSettings(
+            enabled=bool(self.captions_enabled_var.get()),
+            profanity_filter=bool(self.profanity_filter_var.get()),
+        )
 
         output_path = build_output_path(input_path)
         if output_path.exists():
@@ -703,6 +793,7 @@ class SpeechCutterApp(tk.Tk):
             padding_ms=int(round(padding_seconds * 1000)),
             merge_gap_ms=NATURAL_SETTINGS.merge_gap_ms,
             crop=crop_settings,
+            captions=caption_settings,
         )
 
         self._worker = threading.Thread(
@@ -782,14 +873,18 @@ class SpeechCutterApp(tk.Tk):
             self._last_result = result
             self._set_running(False)
             self.progress_var.set(100)
-            summary = (
-                f"Finished. Kept {result.kept_duration:.1f}s of speech and removed "
-                f"{result.removed_duration:.1f}s."
-            )
+            summary = f"Finished. Kept {result.kept_duration:.1f}s of speech and removed {result.removed_duration:.1f}s."
+            extras: list[str] = []
+            if result.caption_event_count:
+                extras.append(f"burned in {result.caption_event_count} caption cue(s)")
+            if result.censored_word_count:
+                extras.append(f"muted {result.censored_word_count} profane word(s)")
+            if extras:
+                summary += " Also " + " and ".join(extras) + "."
             self.status_var.set(summary)
             self._append_log(summary)
             self.open_folder_button.configure(state="normal")
-            messagebox.showinfo("Done", f"Speech-only video saved to:\n\n{result.output_path}")
+            messagebox.showinfo("Done", f"Processed video saved to:\n\n{result.output_path}")
             return
 
         if event.kind == "cancelled":

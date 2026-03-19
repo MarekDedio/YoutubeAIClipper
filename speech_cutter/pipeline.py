@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 
+from .captions import CaptionArtifactResult, CaptionSettings, create_caption_artifacts, needs_transcription
 from .vad import (
     DetectionCancelledError,
     SileroOnnxVad,
@@ -41,6 +42,7 @@ class UserCancelledError(ProcessingError):
 class ProcessingOptions:
     vad: VadSettings = field(default_factory=VadSettings)
     crop: "CropSettings" = field(default_factory=lambda: CropSettings())
+    captions: CaptionSettings = field(default_factory=CaptionSettings)
     video_crf: int = 18
     video_preset: str = "veryfast"
 
@@ -63,6 +65,8 @@ class ProcessingResult:
     input_duration: float
     kept_duration: float
     segments: list[SpeechSegment]
+    caption_event_count: int = 0
+    censored_word_count: int = 0
 
     @property
     def removed_duration(self) -> float:
@@ -119,6 +123,7 @@ def process_video(
         temp_dir_path = Path(temp_dir)
         wav_path = temp_dir_path / "audio.wav"
         filter_script_path = temp_dir_path / "speech_concat.ffscript"
+        base_render_path = output_path if not needs_transcription(options.captions) else temp_dir_path / "trimmed_base.mp4"
 
         _log(log_callback, "Extracting mono 16 kHz audio for speech detection.")
         _run_ffmpeg_with_progress(
@@ -247,15 +252,48 @@ def process_video(
                 "-progress",
                 "pipe:1",
                 "-nostats",
-                str(output_path),
+                str(base_render_path),
             ],
             total_duration=max(kept_duration, 0.001),
             progress_start=0.60,
-            progress_end=1.00,
+            progress_end=1.00 if not needs_transcription(options.captions) else 0.82,
             status="Rendering output video...",
             progress_callback=progress_callback,
             cancel_callback=cancel_callback,
         )
+
+        caption_event_count = 0
+        censored_word_count = 0
+        if needs_transcription(options.captions):
+            _ensure_not_cancelled(cancel_callback)
+            artifacts = _create_caption_artifacts(
+                base_render_path,
+                temp_dir_path,
+                options=options,
+                metadata=metadata,
+                kept_duration=kept_duration,
+                progress_callback=progress_callback,
+                log_callback=log_callback,
+                cancel_callback=cancel_callback,
+            )
+            caption_event_count = artifacts.caption_event_count
+            censored_word_count = artifacts.censored_word_count
+
+            if artifacts.subtitle_path or artifacts.profanity_intervals:
+                _log(log_callback, "Baking in TikTok-style subtitles and applying profanity filtering.")
+                _render_postprocessed_video(
+                    base_render_path,
+                    output_path,
+                    options=options,
+                    artifacts=artifacts,
+                    temp_dir_path=temp_dir_path,
+                    kept_duration=kept_duration,
+                    progress_callback=progress_callback,
+                    cancel_callback=cancel_callback,
+                )
+            else:
+                shutil.copyfile(base_render_path, output_path)
+                _emit_progress(progress_callback, 1.0, "Finished.")
 
     _emit_progress(progress_callback, 1.0, "Finished.")
     _log(log_callback, f"Saved output to {output_path}")
@@ -265,6 +303,8 @@ def process_video(
         input_duration=metadata["duration"],
         kept_duration=kept_duration,
         segments=segments,
+        caption_event_count=caption_event_count,
+        censored_word_count=censored_word_count,
     )
 
 
@@ -402,6 +442,143 @@ def _build_filter_script(
     return ";\n".join(lines) + "\n"
 
 
+def _create_caption_artifacts(
+    base_render_path: Path,
+    temp_dir_path: Path,
+    *,
+    options: ProcessingOptions,
+    metadata: dict[str, float | bool | None],
+    kept_duration: float,
+    progress_callback: ProgressCallback | None,
+    log_callback: LogCallback | None,
+    cancel_callback: CancelCallback | None,
+) -> CaptionArtifactResult:
+    video_width = _as_int(metadata.get("video_width"))
+    video_height = _as_int(metadata.get("video_height"))
+    if video_width <= 0 or video_height <= 0:
+        raise ProcessingError("Could not read the source video size needed for burned-in subtitles.")
+
+    try:
+        artifacts = create_caption_artifacts(
+            base_render_path,
+            temp_dir_path,
+            video_width=video_width,
+            video_height=video_height,
+            total_duration=kept_duration,
+            settings=options.captions,
+            progress_callback=lambda ratio, status: _emit_progress(
+                progress_callback,
+                0.82 + max(0.0, min(ratio, 1.0)) * 0.12,
+                status,
+            ),
+            log_callback=log_callback,
+            cancel_callback=cancel_callback,
+        )
+    except RuntimeError as exc:
+        if str(exc) == "Processing was cancelled.":
+            raise UserCancelledError(str(exc)) from exc
+        raise ProcessingError(str(exc)) from exc
+
+    if artifacts.transcribed_word_count:
+        _log(
+            log_callback,
+            (
+                f"Transcribed {artifacts.transcribed_word_count} word(s), built "
+                f"{artifacts.caption_event_count} caption cue(s), and flagged {artifacts.censored_word_count} profane word(s)."
+            ),
+        )
+    else:
+        _log(log_callback, "No subtitle words were recovered from the trimmed output.")
+
+    return artifacts
+
+
+def _render_postprocessed_video(
+    base_render_path: Path,
+    output_path: Path,
+    *,
+    options: ProcessingOptions,
+    artifacts: CaptionArtifactResult,
+    temp_dir_path: Path,
+    kept_duration: float,
+    progress_callback: ProgressCallback | None,
+    cancel_callback: CancelCallback | None,
+) -> None:
+    filter_script_path = temp_dir_path / "subtitle_burn.ffscript"
+    filter_lines: list[str] = []
+    map_video = "0:v:0"
+    map_audio = "0:a:0"
+    copy_video = True
+    copy_audio = True
+
+    if artifacts.subtitle_path is not None:
+        filter_lines.append(f"[0:v:0]ass={artifacts.subtitle_path.name}[outv]")
+        map_video = "[outv]"
+        copy_video = False
+    if artifacts.profanity_intervals:
+        filter_lines.append(_build_audio_profanity_filter(artifacts.profanity_intervals))
+        map_audio = "[outa]"
+        copy_audio = False
+
+    filter_script_path.write_text(";\n".join(filter_lines) + "\n", encoding="utf-8")
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-i",
+        str(base_render_path),
+        "-filter_complex_script",
+        str(filter_script_path),
+        "-map",
+        map_video,
+        "-map",
+        map_audio,
+    ]
+
+    if copy_video:
+        command.extend(["-c:v", "copy"])
+    else:
+        command.extend(["-c:v", "libx264", "-preset", options.video_preset, "-crf", str(options.video_crf)])
+
+    if copy_audio:
+        command.extend(["-c:a", "copy"])
+    else:
+        command.extend(["-c:a", "aac", "-b:a", "192k"])
+
+    command.extend(
+        [
+            "-movflags",
+            "+faststart",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            str(output_path),
+        ]
+    )
+
+    _run_ffmpeg_with_progress(
+        command,
+        total_duration=max(kept_duration, 0.001),
+        progress_start=0.94,
+        progress_end=1.00,
+        status="Rendering subtitles and profanity filter...",
+        progress_callback=progress_callback,
+        cancel_callback=cancel_callback,
+        cwd=temp_dir_path,
+    )
+
+
+def _build_audio_profanity_filter(intervals: list[tuple[float, float]]) -> str:
+    filters = ["asetpts=PTS-STARTPTS"]
+    for start, end in intervals:
+        filters.append(f"volume=enable='between(t,{start:.3f},{end:.3f})':volume=0")
+    return f"[0:a:0]{','.join(filters)}[outa]"
+
+
 def _run_ffmpeg_with_progress(
     command: list[str],
     *,
@@ -411,6 +588,7 @@ def _run_ffmpeg_with_progress(
     status: str,
     progress_callback: ProgressCallback | None,
     cancel_callback: CancelCallback | None,
+    cwd: Path | None = None,
 ) -> None:
     process = subprocess.Popen(
         command,
@@ -419,6 +597,7 @@ def _run_ffmpeg_with_progress(
         text=True,
         encoding="utf-8",
         errors="replace",
+        cwd=str(cwd) if cwd is not None else None,
         **_startup_kwargs(),
     )
 
@@ -609,6 +788,11 @@ def _prepare_crop_settings(
     if crop.x + crop.width > video_width or crop.y + crop.height > video_height:
         raise ProcessingError(
             f"Crop rectangle must stay inside the source video ({video_width}x{video_height})."
+        )
+    aspect_error = abs((crop.width * video_height) - (crop.height * video_width))
+    if aspect_error > max(video_width, video_height):
+        raise ProcessingError(
+            "Crop must keep the same aspect ratio as the source video so zoomed segments do not stretch."
         )
     if crop.every_n_segments < 1:
         raise ProcessingError("Crop cadence must be at least 1.")
