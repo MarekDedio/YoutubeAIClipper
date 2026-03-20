@@ -280,15 +280,18 @@ def _build_caption_events(words: list[CaptionWord], settings: CaptionSettings) -
         groups.append(current)
 
     events: list[tuple[float, float, str]] = []
-    for group in groups:
+    for group_index, group in enumerate(groups):
+        next_group_start = groups[group_index + 1][0].start if group_index + 1 < len(groups) else None
         for index, word in enumerate(group):
             start = word.start
             if index < len(group) - 1:
-                end = max(word.end, group[index + 1].start - 0.03)
+                end = max(word.end, group[index + 1].start)
             else:
                 end = max(word.end, group[-1].end + 0.08)
+                if next_group_start is not None:
+                    end = min(end, max(word.end, next_group_start - 0.001))
             if end <= start:
-                end = start + 0.10
+                end = start + 0.01
             events.append((start, end, _format_event_text(group, index)))
     return _normalize_caption_events(events)
 
@@ -406,17 +409,11 @@ def _normalize_caption_events(events: list[tuple[float, float, str]]) -> list[tu
 
     normalized: list[tuple[float, float, str]] = []
     previous_end = -1.0
-    min_duration = 0.06
-    handoff_gap = 0.02
+    min_duration = 0.01
 
-    for index, (start, end, text) in enumerate(events):
-        next_start = events[index + 1][0] if index + 1 < len(events) else None
-        safe_start = max(start, previous_end + 0.01 if previous_end >= 0 else start)
+    for start, end, text in events:
+        safe_start = max(start, previous_end if previous_end >= 0 else start)
         safe_end = max(end, safe_start + min_duration)
-        if next_start is not None:
-            safe_end = min(safe_end, max(safe_start + min_duration, next_start - handoff_gap))
-        if safe_end <= safe_start:
-            safe_end = safe_start + min_duration
         normalized.append((safe_start, safe_end, text))
         previous_end = safe_end
 
