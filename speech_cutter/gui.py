@@ -375,12 +375,15 @@ class SpeechCutterApp(tk.Tk):
         self.crop_every_value_var = tk.StringVar()
         self.crop_min_seconds_var = tk.DoubleVar(value=1.2)
         self.crop_min_seconds_value_var = tk.StringVar()
+        self.crop_zoom_seconds_var = tk.DoubleVar(value=2.0)
+        self.crop_zoom_seconds_value_var = tk.StringVar()
         self.captions_enabled_var = tk.BooleanVar(value=True)
         self.profanity_filter_var = tk.BooleanVar(value=True)
 
         self.padding_seconds_var.trace_add("write", self._refresh_setting_labels)
         self.crop_every_var.trace_add("write", self._refresh_setting_labels)
         self.crop_min_seconds_var.trace_add("write", self._refresh_setting_labels)
+        self.crop_zoom_seconds_var.trace_add("write", self._refresh_setting_labels)
 
         self._configure_styles()
         self._refresh_setting_labels()
@@ -422,6 +425,8 @@ class SpeechCutterApp(tk.Tk):
         self.padding_value_var.set(f"{float(self.padding_seconds_var.get()):.2f}s")
         self.crop_every_value_var.set(str(max(1, int(round(float(self.crop_every_var.get()))))))
         self.crop_min_seconds_value_var.set(f"{float(self.crop_min_seconds_var.get()):.1f}s")
+        zoom_seconds = float(self.crop_zoom_seconds_var.get())
+        self.crop_zoom_seconds_value_var.set("Full segment" if zoom_seconds <= 0.0 else f"{zoom_seconds:.1f}s")
 
     def _on_padding_scale(self, value: str) -> None:
         snapped = min(3.0, max(0.0, round(float(value) / 0.05) * 0.05))
@@ -439,6 +444,12 @@ class SpeechCutterApp(tk.Tk):
         snapped = round(snapped, 1)
         if abs(float(self.crop_min_seconds_var.get()) - snapped) > 1e-9:
             self.crop_min_seconds_var.set(snapped)
+
+    def _on_crop_zoom_scale(self, value: str) -> None:
+        snapped = min(10.0, max(0.0, round(float(value) / 0.1) * 0.1))
+        snapped = round(snapped, 1)
+        if abs(float(self.crop_zoom_seconds_var.get()) - snapped) > 1e-9:
+            self.crop_zoom_seconds_var.set(snapped)
 
     def _build_layout(self) -> None:
         root = ttk.Frame(self, style="Root.TFrame", padding=18)
@@ -566,18 +577,47 @@ class SpeechCutterApp(tk.Tk):
         )
         self.crop_min_scale.grid(row=5, column=0, columnspan=3, sticky="ew")
 
+        crop_zoom_header = ttk.Frame(crop_card, style="CardInner.TFrame")
+        crop_zoom_header.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+        crop_zoom_header.columnconfigure(0, weight=1)
+        ttk.Label(crop_zoom_header, text="Keep Zoom For (seconds)", style="Section.TLabel").grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
+        ttk.Label(crop_zoom_header, textvariable=self.crop_zoom_seconds_value_var, style="Body.TLabel").grid(
+            row=0,
+            column=1,
+            sticky="e",
+        )
+        self.crop_zoom_scale = ttk.Scale(
+            crop_card,
+            from_=0.0,
+            to=10.0,
+            variable=self.crop_zoom_seconds_var,
+            command=self._on_crop_zoom_scale,
+            style="Accent.Horizontal.TScale",
+        )
+        self.crop_zoom_scale.grid(row=7, column=0, columnspan=3, sticky="ew")
+
         ttk.Label(
             crop_card,
             text=(
                 "The crop box is picked on a frame preview and is locked to the original video aspect ratio, "
-                "so the zoom never stretches. Cropped segments are scaled back up, and short segments can be skipped "
-                "to avoid fast jump cuts."
+                "so the zoom never stretches. Cropped segments are scaled back up, short segments can be skipped "
+                "to avoid fast jump cuts, and setting zoom length to 0 keeps the zoom for the full segment."
             ),
             style="Body.TLabel",
             wraplength=780,
-        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(12, 0))
 
-        self._crop_widgets = [self.pick_crop_button, self.clear_crop_button, self.crop_every_scale, self.crop_min_scale]
+        self._crop_widgets = [
+            self.pick_crop_button,
+            self.clear_crop_button,
+            self.crop_every_scale,
+            self.crop_min_scale,
+            self.crop_zoom_scale,
+        ]
 
         caption_card = ttk.Frame(root, style="Card.TFrame", padding=16)
         caption_card.grid(row=4, column=0, sticky="ew")
@@ -750,6 +790,7 @@ class SpeechCutterApp(tk.Tk):
             padding_seconds = max(0.0, float(self.padding_seconds_var.get()))
             crop_every = max(1, int(round(float(self.crop_every_var.get()))))
             crop_min_seconds = max(0.0, float(self.crop_min_seconds_var.get()))
+            crop_zoom_seconds = max(0.0, float(self.crop_zoom_seconds_var.get()))
         except (tk.TclError, ValueError):
             messagebox.showerror("Invalid settings", "One of the trim or crop settings is not valid.")
             return
@@ -766,6 +807,7 @@ class SpeechCutterApp(tk.Tk):
             height=self._crop_rect[3] if self._crop_rect else 0,
             every_n_segments=crop_every,
             min_segment_seconds=crop_min_seconds,
+            zoom_duration_seconds=crop_zoom_seconds,
         )
         caption_settings = CaptionSettings(
             enabled=bool(self.captions_enabled_var.get()),

@@ -6,13 +6,14 @@ from typing import Callable
 import math
 import os
 import re
+import subprocess
 
 
 LogCallback = Callable[[str], None]
 ProgressCallback = Callable[[float, str], None]
 CancelCallback = Callable[[], bool]
 
-DEFAULT_MODEL_NAME = "base"
+DEFAULT_MODEL_NAME = "small"
 _MODEL_CACHE: dict[tuple[str, str], object] = {}
 
 _PROFANITY_PREFIXES = (
@@ -97,8 +98,16 @@ def create_caption_artifacts(
             transcribed_word_count=0,
         )
 
-    words = _transcribe_words(
+    transcription_input = _prepare_transcription_audio(
         input_path,
+        output_dir=output_dir,
+        total_duration=max(total_duration, 0.001),
+        progress_callback=progress_callback,
+        log_callback=log_callback,
+    )
+
+    words = _transcribe_words(
+        transcription_input,
         total_duration=max(total_duration, 0.001),
         settings=settings,
         progress_callback=progress_callback,
@@ -147,10 +156,10 @@ def _transcribe_words(
 
     segments, _info = model.transcribe(
         str(input_path),
-        beam_size=1,
-        best_of=1,
+        beam_size=4,
+        best_of=4,
         word_timestamps=True,
-        vad_filter=False,
+        vad_filter=True,
         condition_on_previous_text=False,
         temperature=0.0,
     )
@@ -187,6 +196,50 @@ def _transcribe_words(
     if progress_callback:
         progress_callback(1.0, "Transcribing speech for captions...")
     return [word for word in words if word.end > word.start]
+
+
+def _prepare_transcription_audio(
+    input_path: Path,
+    *,
+    output_dir: Path,
+    total_duration: float,
+    progress_callback: ProgressCallback | None,
+    log_callback: LogCallback | None,
+) -> Path:
+    wav_path = output_dir / "captions_audio.wav"
+    if log_callback:
+        log_callback("Extracting clean mono audio for more stable subtitle timing.")
+    if progress_callback:
+        progress_callback(0.03, "Preparing audio for captions...")
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-i",
+        str(input_path),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_s16le",
+        str(wav_path),
+    ]
+    try:
+        subprocess.run(command, check=True, **_subprocess_kwargs())
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError("Could not prepare audio for subtitles.") from exc
+
+    if progress_callback:
+        progress_callback(min(0.10, max(0.03, 2.0 / max(total_duration, 0.001))), "Preparing audio for captions...")
+    return wav_path
 
 
 def _extract_segment_words(segment: object) -> list[CaptionWord]:
@@ -478,3 +531,13 @@ def _load_model(model_name: str, log_callback: LogCallback | None) -> object:
         )
     _MODEL_CACHE[cache_key] = model
     return model
+
+
+def _subprocess_kwargs() -> dict[str, object]:
+    kwargs: dict[str, object] = {}
+    if os.name == "nt":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        kwargs["startupinfo"] = startupinfo
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return kwargs

@@ -56,6 +56,7 @@ class CropSettings:
     height: int = 0
     every_n_segments: int = 3
     min_segment_seconds: float = 1.0
+    zoom_duration_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -418,7 +419,8 @@ def _build_filter_script(
     crop_settings: CropSettings | None,
 ) -> str:
     lines: list[str] = []
-    for index, segment in enumerate(segments):
+    clip_specs = _expand_segment_clips(segments, crop_settings=crop_settings)
+    for index, (segment, apply_crop) in enumerate(clip_specs):
         start = f"{segment.start:.6f}"
         end = f"{segment.end:.6f}"
 
@@ -426,7 +428,7 @@ def _build_filter_script(
             f"[0:v:0]trim=start={start}:end={end}",
             "setpts=PTS-STARTPTS",
         ]
-        if _should_crop_segment(segment, index + 1, crop_settings):
+        if apply_crop:
             assert crop_settings is not None
             video_filters.append(
                 f"crop=w={crop_settings.width}:h={crop_settings.height}:x={crop_settings.x}:y={crop_settings.y}"
@@ -437,9 +439,44 @@ def _build_filter_script(
         lines.append(",".join(video_filters) + f"[v{index}]")
         lines.append(f"[0:a:0]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{index}]")
 
-    concat_inputs = "".join(f"[v{index}][a{index}]" for index in range(len(segments)))
-    lines.append(f"{concat_inputs}concat=n={len(segments)}:v=1:a=1[outv][outa]")
+    concat_inputs = "".join(f"[v{index}][a{index}]" for index in range(len(clip_specs)))
+    lines.append(f"{concat_inputs}concat=n={len(clip_specs)}:v=1:a=1[outv][outa]")
     return ";\n".join(lines) + "\n"
+
+
+def _expand_segment_clips(
+    segments: list[SpeechSegment],
+    *,
+    crop_settings: CropSettings | None,
+) -> list[tuple[SpeechSegment, bool]]:
+    clips: list[tuple[SpeechSegment, bool]] = []
+    for index, segment in enumerate(segments, start=1):
+        should_crop = _should_crop_segment(segment, index, crop_settings)
+        clips.extend(_split_segment_for_zoom(segment, should_crop=should_crop, crop_settings=crop_settings))
+    return clips
+
+
+def _split_segment_for_zoom(
+    segment: SpeechSegment,
+    *,
+    should_crop: bool,
+    crop_settings: CropSettings | None,
+) -> list[tuple[SpeechSegment, bool]]:
+    if not should_crop or crop_settings is None:
+        return [(segment, False)]
+
+    zoom_duration = crop_settings.zoom_duration_seconds
+    if zoom_duration <= 0 or segment.duration <= zoom_duration:
+        return [(segment, True)]
+
+    zoom_end = min(segment.end, segment.start + zoom_duration)
+    if zoom_end <= segment.start:
+        return [(segment, False)]
+
+    clips: list[tuple[SpeechSegment, bool]] = [(SpeechSegment(segment.start, zoom_end), True)]
+    if zoom_end < segment.end:
+        clips.append((SpeechSegment(zoom_end, segment.end), False))
+    return clips
 
 
 def _create_caption_artifacts(
@@ -798,6 +835,8 @@ def _prepare_crop_settings(
         raise ProcessingError("Crop cadence must be at least 1.")
     if crop.min_segment_seconds < 0:
         raise ProcessingError("Minimum crop segment length cannot be negative.")
+    if crop.zoom_duration_seconds < 0:
+        raise ProcessingError("Zoom duration cannot be negative.")
 
     return crop
 
